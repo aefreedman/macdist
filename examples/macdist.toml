@@ -1,0 +1,11 @@
+# Copy into your game's repository and review every field.
+[app]
+bundle_id = "com.example.game"
+team_id = "AB12345678" # Required release team; must match your local profile.
+
+[signing]
+profile = "example"
+entitlements = "distribution/macos.entitlements"
+
+[output]
+runs_dir = "Releases/macos"

@@ -1,0 +1,181 @@
+# macdist
+
+Explicit, resumable Developer ID signing and notarization for **plain macOS application bundles**, including Unity players. Build your app first; macdist stages a copy, signs it, submits it to Apple, staples the accepted ticket, and produces a verified ZIP. It never invokes Unity or changes your original build.
+
+Initial release: CLI only. No hosted service, dashboard, itch publishing, certificate issuance, or automatic release uploads. Python 3.11+, macOS, and current selected Xcode command-line tools are required for real operations. The tool has no runtime Python dependencies.
+
+## Install
+
+Using an isolated tool installer:
+
+```sh
+pipx install 'git+https://github.com/aefreedman/macdist.git@v0.1.0'
+# Or: uv tool install 'git+https://github.com/aefreedman/macdist.git@v0.1.0'
+```
+
+For a local checkout:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/macdist --help
+```
+
+Pin a tag or commit in automation. This distribution name has not been published to PyPI; do not assume `pip install macdist` installs this project.
+
+## Configuration boundaries
+
+1. **Tool repository:** reusable implementation and offline tests; no machine configuration or credentials.
+2. **Game repository:** `macdist.toml` with expected bundle ID, required Apple team, local profile name, reviewed entitlements, and output directory.
+3. **User/machine:** `~/.config/macdist/config.toml` (or `$XDG_CONFIG_HOME/macdist/config.toml`) maps profile names to signing identities and Keychain credential profile names. `--user-config PATH`, before the subcommand, selects another file.
+4. **Secrets:** certificate private keys and notarization credentials stay in Keychain. CI must provision an isolated Keychain itself; a dedicated CI credential bootstrap is not implemented yet.
+
+Team IDs and identity names are not secrets. The project-required team prevents a local configuration from silently changing the release organization. There is no identity fallback. Different users can map the same logical profile to their own certificates and credential profile names for that team.
+
+## 1. Install a signing identity
+
+You need **Developer ID Application**, not Apple Development or Apple Distribution. Either import an existing password-protected `.p12` containing the certificate **and private key**, or use Keychain Access to create a CSR on this Mac and have the Apple Developer Account Holder issue a Developer ID Application certificate. Install the resulting `.cer` on the Mac holding the matching private key.
+
+```sh
+security find-identity -v -p codesigning
+```
+
+The exact organization identity must appear among valid identities. Developer ID Installer is only for `.pkg` installers, which this initial tool does not support. Back up private keys securely; never commit certificate exports or keys.
+
+See [Apple's certificate instructions](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/).
+
+## 2. Configure this machine
+
+```sh
+macdist setup
+```
+
+Select a valid identity, name the local profile, and choose the notarization Keychain profile. Setup writes a mode-0600 nonsecret configuration; replacing an existing profile requires `--replace-profile`. It prints the credential command but **does not contact Apple by default**.
+
+To launch Apple's interactive secure credential prompt as part of setup:
+
+```sh
+macdist setup --store-credentials
+```
+
+Enter your Apple Account and an [app-specific password](https://support.apple.com/en-us/102654) into Apple's prompt in Terminal, never into chat, source files, or command arguments. macdist does not capture the credential prompt. Follow Apple's prompts for your supported authentication method; existing API-key-backed Keychain profiles can also be referenced.
+
+Noninteractive profile configuration (does not install certificates or store credentials):
+
+```sh
+macdist setup --profile example \
+  --identity 'Developer ID Application: Example Corporation (AB12345678)' \
+  --keychain-profile example-notary
+```
+
+See `examples/user-config.toml`. Setup validates the identity/private key but does not prove notarization authentication unless you explicitly store/validate credentials. Profile writing is intended for one local operator at a time.
+
+## 3. Configure each game
+
+Copy `examples/macdist.toml` into the game repository:
+
+```toml
+[app]
+bundle_id = "com.example.game"
+team_id = "AB12345678"
+
+[signing]
+profile = "example"
+entitlements = "distribution/macos.entitlements"
+
+[output]
+runs_dir = "Releases/macos"
+```
+
+Entitlement and output paths resolve relative to the project file, **not** the tool installation or current working directory. Absolute paths are supported but are discouraged in committed project files. The `--app` and explicit `--run` CLI paths are relative to your current directory. Add the generated output directory to your game's ignore rules.
+
+**Entitlements must be deliberately reviewed and supplied.** There is no default Unity policy. `examples/empty.entitlements` is a starting point only for apps needing no runtime exceptions; it is not a working recipe for every Unity version/backend. Mono, IL2CPP, native plugins, helpers, and Unity upgrades require review. The Mono entitlement file under `tests/fixtures/` is solely a test fixture, not a recommended release policy.
+
+This initial workflow rejects App Sandbox and debug `get-task-allow`. It is not suitable for independent helper entitlement policies, app extensions, restricted capabilities requiring profiles, arbitrary installers, or App Store releases.
+
+## 4. Inspect before uploading
+
+```sh
+macdist doctor --project /path/to/game/macdist.toml
+macdist doctor --project /path/to/game/macdist.toml --check-credentials
+macdist preflight --project /path/to/game/macdist.toml --app /path/to/Game.app
+```
+
+`doctor` validates configuration, entitlement format, Xcode tools, and exactly one valid matching signing identity. With `--app`, it inspects the build too. `--check-credentials` makes an explicit **read-only** notarization-history request to Apple. Offline checks do not prove authentication, runtime compatibility, or successful notarization.
+
+## 5. Sign, notarize, and package
+
+Sign a staged copy and create the submission ZIP **without uploading**:
+
+```sh
+macdist prepare --project /path/to/game/macdist.toml \
+  --app /path/to/Game.app --name release-001
+```
+
+Or explicitly perform the whole workflow, including upload to Apple:
+
+```sh
+macdist distribute --project /path/to/game/macdist.toml \
+  --app /path/to/Game.app --name release-002 --progress
+```
+
+`--name` creates a new run under the configured output directory. Alternatively, supply `--run /explicit/new/run`. Every new run requires a nonexistent directory. Budget peak storage for several app copies and two ZIPs. Successful packaging removes working copies by default; `--keep-working-artifacts` retains them for diagnosis.
+
+Only ship `final/Game-macos.zip` from a **packaged** run. Never ship `submission.zip`: it predates stapling. The final ZIP checksum, resolved nonsecret signing configuration, tool version, entitlement snapshot, submission ID, and Apple evidence are retained with the run. Logs and run state contain local paths and release metadata; they are not intended for public source control.
+
+## Recovery
+
+A prepared run can be uploaded and resumed separately:
+
+```sh
+macdist submit --run /path/to/run --progress
+macdist status --run /path/to/run
+macdist resume --run /path/to/run --wait
+```
+
+Recovery uses the configuration captured in that run, not today's project or local profile configuration. Its referenced Keychain profile must remain available. Do not edit run evidence to migrate credentials or fake success.
+
+- Exit **0** means the requested operation succeeded; `prepare`/`submit` success does not mean a shipping ZIP is ready.
+- Exit **2** means Apple is still processing.
+- Exit **1** means failed/uncertain; inspect evidence.
+- Exit **130** means interrupted; inspect the run before further operations.
+
+A submission attempt is recorded **before dispatch**. Failed/lost upload responses cannot be blindly replayed. Locate the original submission in Apple's history, then deliberately associate its ID:
+
+```sh
+macdist reconcile --run /path/to/run --submission-id ORIGINAL_UUID
+macdist resume --run /path/to/run --wait
+```
+
+Apple's Accepted log must match both the submission UUID and uploaded archive SHA-256 before packaging. `resume --wait` waits on the existing ID; it never uploads again. There is no automatic retry or backend fallback. Preserve partial final output for investigation; it is not overwritten automatically.
+
+An operation lock blocks concurrent run mutations. After a crash, inspect the PID, logs, and state before manually removing a stale lock. Never remove a live process's lock. Avoid concurrent local configuration edits.
+
+```sh
+macdist cleanup --run /path/to/completed/run
+# Add --keep-app to retain the final unpacked app.
+```
+
+Cleanup revalidates final archive and Accepted evidence, removes only known working artifacts, and preserves the original app, final ZIP, metadata, logs, and unknown files. A failed cleanup can be deliberately resumed after inspection.
+
+## Verification and limitations
+
+Code is discovered as Mach-O, signed leaves-first and nested bundles next, then the outer app last. `--deep` is used for verification, **not signing**. Signing enables hardened runtime and secure timestamps. Entitlements are applied to main executables and app/XPC bundles, not every dylib. Each architecture is checked; the final archive is extracted and checked again for signatures, staple, and Gatekeeper acceptance.
+
+Notarization is not a playtest. Download the final ZIP through a browser on another Mac/user account, extract and launch without Gatekeeper overrides, and test architectures, permissions, native plugins, startup, and gameplay. Do not bypass Gatekeeper or strip quarantine as a release fix.
+
+Treat source apps, project files, and run directories as trusted local inputs. Run only as your normal user, never root. This is not a sandbox or a multi-user service. See [SECURITY.md](SECURITY.md).
+
+## Development
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+Tests use mocks and local fixtures: no real signing, Keychain mutation, Apple requests, or uploads. CI tests Python 3.11 and 3.14 on Linux and macOS. A real app signing/notarization smoke test is still required before adopting a release for production.
+
+The initial engine and safety tests were extracted from existing project-local Unity distribution tooling, without importing its project history, credentials, publishing configuration, or release artifacts. Publishing and the dashboard are deferred so this repository starts with a focused core.
+
+References: [Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution), [Unity macOS signing](https://docs.unity3d.com/6000.5/Documentation/Manual/macoscodesigning.html). Review documentation for your actual Unity version, not just the linked example.

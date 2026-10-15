@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "macdist"
+version = "0.1.0"
+description = "Explicit, resumable Developer ID signing and notarization for plain macOS apps"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Aaron Freedman"}]
+dependencies = []
+
+[project.scripts]
+macdist = "macdist.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
