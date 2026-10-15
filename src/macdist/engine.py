@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Sign and notarize an existing Unity macOS app; never build or launch Unity."""
 
-import argparse
 import errno
 from contextlib import contextmanager
 import hashlib
@@ -23,7 +22,6 @@ import uuid
 from . import __version__
 
 
-HERE = Path(__file__).resolve().parent
 MACHO_MAGICS = {
     b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",
     b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe",

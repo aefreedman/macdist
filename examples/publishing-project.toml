@@ -1,0 +1,16 @@
+# Opt-in example; destinations are fictional. Configure local profiles separately.
+[app]
+bundle_id = "com.example.game"
+team_id = "AB12345678"
+
+[signing]
+profile = "example"
+entitlements = "distribution/macos.entitlements"
+
+[output]
+runs_dir = "Releases/macos"
+
+[publishing.itch]
+target = "example/game"
+channel = "MacOS"
+profile = "example-itch"

@@ -3,7 +3,7 @@
 Do not include passwords, private keys, certificate exports, or raw release logs
 in issues or pull requests. For a suspected vulnerability, use GitHub's private
 vulnerability reporting when available rather than posting exploit details
-publicly. No response-time guarantee is offered for this initial release.
+publicly. No response-time guarantee is offered.
 
 ## Boundaries
 
@@ -22,4 +22,11 @@ publicly. No response-time guarantee is offered for this initial release.
 - Notarization and local Gatekeeper acceptance do not establish application
   safety or runtime compatibility. Perform an independent download/launch test.
 - CI credentials and isolated Keychain provisioning are the operator's
-  responsibility. Do not use untrusted pull-request code with signing secrets.
+  responsibility. Do not use untrusted pull-request code with signing or publishing secrets.
+- The dashboard is loopback-only, single-user, and monitor-only. Do not tunnel or
+  host it publicly. Session tokens and Host/Origin checks are not a multi-user
+  authorization system. It never retrieves publishing credentials or uploads.
+- Publishing uses a dedicated read-only 1Password service account scoped to its
+  publishing vault. The configured reference and executable PATH must be trusted.
+  Personal op/Butler sessions and generic credential fallbacks are not supported.
+  Even a successful upload requires an independent download/launch check.

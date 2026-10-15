@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "itch": {
+    "target": "example/example",
+    "channel": "MacOS",
+    "api_key_ref": "op://example-publishing/itch.io butler api/credential"
+  },
+  "credentials": {
+    "token_env": "MACDIST_PUBLISHING_OP_SERVICE_ACCOUNT_TOKEN",
+    "keychain_service": "example-publishing-op-service-account-token",
+    "keychain_account": "example-publishing"
+  },
+  "release": {
+    "bundle_id": "com.example.example",
+    "team_id": "AB12345678"
+  }
+}

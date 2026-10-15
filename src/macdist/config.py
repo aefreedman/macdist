@@ -46,13 +46,31 @@ def read_toml(path):
 
 
 def load_user(path):
-    data = table(read_toml(path), {"profiles"})
+    data = table(read_toml(path), {"profiles"}, {"publishing_profiles"})
     if not isinstance(data["profiles"], dict):
         raise DistributionError("profiles must be a table.")
     for name, profile in data["profiles"].items():
         string(name, "profile name")
         validate_profile(profile)
+    publishing_profiles = data.get("publishing_profiles", {})
+    if not isinstance(publishing_profiles, dict):
+        raise DistributionError("publishing_profiles must be a table.")
+    for name, profile in publishing_profiles.items():
+        string(name, "publishing profile name")
+        validate_publishing_profile(profile)
     return data
+
+
+def validate_publishing_profile(profile):
+    from .publish import validate_config
+    table(profile, {"api_key_ref", "token_env", "keychain_service", "keychain_account"})
+    for key, value in profile.items():
+        string(value, key)
+    validate_config({"schema": 1,
+                     "itch": {"target": "example/game", "channel": "MacOS", "api_key_ref": profile["api_key_ref"]},
+                     "credentials": {k: profile[k] for k in ("token_env", "keychain_service", "keychain_account")},
+                     "release": {"bundle_id": "com.example.game", "team_id": "AB12345678"}})
+    return profile
 
 
 def validate_entitlements(path):
@@ -71,11 +89,12 @@ class Project:
     config: dict
     entitlements: Path
     runs_dir: Path
+    publishing: dict | None = None
 
 
 def load_project(path, user_path):
     path = path.expanduser().resolve(strict=True)
-    data = table(read_toml(path), {"app", "signing", "output"})
+    data = table(read_toml(path), {"app", "signing", "output"}, {"publishing"})
     app = table(data["app"], {"bundle_id", "team_id"})
     signing = table(data["signing"], {"profile", "entitlements"})
     output = table(data["output"], {"runs_dir"})
@@ -84,7 +103,8 @@ def load_project(path, user_path):
             string(value, key)
     if not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", app["bundle_id"]):
         raise DistributionError("Expected a reverse-DNS bundle identifier.")
-    profiles = load_user(user_path.expanduser())["profiles"]
+    user = load_user(user_path.expanduser())
+    profiles = user["profiles"]
     if signing["profile"] not in profiles:
         raise DistributionError(f'Unknown local profile {signing["profile"]!r}; run macdist setup.')
     profile = profiles[signing["profile"]]
@@ -94,5 +114,21 @@ def load_project(path, user_path):
         candidate = Path(value).expanduser()
         return (path.parent / candidate).resolve()
     entitlements = validate_entitlements(relative(signing["entitlements"]))
+    publishing = None
+    if "publishing" in data:
+        from .publish import validate_config
+        settings = table(data["publishing"], {"itch"})
+        itch = table(settings["itch"], {"target", "channel", "profile"})
+        for key, value in itch.items():
+            string(value, key)
+        local = user.get("publishing_profiles", {}).get(itch["profile"])
+        if local is None:
+            raise DistributionError("Unknown publishing profile; run macdist setup-publishing.")
+        publishing = validate_config({
+            "schema": 1,
+            "itch": {"target": itch["target"], "channel": itch["channel"], "api_key_ref": local["api_key_ref"]},
+            "credentials": {k: local[k] for k in ("token_env", "keychain_service", "keychain_account")},
+            "release": {"bundle_id": app["bundle_id"], "team_id": app["team_id"]},
+        })
     return Project(path, {"bundle_id": app["bundle_id"], **profile}, entitlements,
-                   relative(output["runs_dir"]))
+                   relative(output["runs_dir"]), publishing)

@@ -3,3 +3,10 @@
 team_id = "AB12345678"
 signing_identity = "Developer ID Application: Example Corporation (AB12345678)"
 keychain_profile = "example-notary"
+
+# Optional. These are references, never raw credentials.
+[publishing_profiles.example-itch]
+api_key_ref = "op://publishing-vault/itch/credential"
+token_env = "MACDIST_PUBLISHING_OP_SERVICE_ACCOUNT_TOKEN"
+keychain_service = "example-publishing-token"
+keychain_account = "example-publisher"

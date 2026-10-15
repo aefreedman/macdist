@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 
-from .config import load_user, validate_profile
+from .config import load_user, validate_profile, validate_publishing_profile
 from .engine import DistributionError
 
 
@@ -18,18 +18,27 @@ def identities():
     return re.findall(r'\b([A-Fa-f0-9]{40})\s+"(Developer ID Application:[^"\n]+)"', result.stdout)
 
 
-def save_profile(path, name, profile, replace=False):
-    validate_profile(profile)
+def save_profile(path, name, profile, replace=False, group="profiles"):
+    if group == "profiles":
+        validate_profile(profile)
+    elif group == "publishing_profiles":
+        validate_publishing_profile(profile)
+    else:
+        raise DistributionError("Unsupported profile group.")
     data = load_user(path) if path.exists() else {"profiles": {}}
-    if name in data["profiles"] and not replace:
+    profiles = data.setdefault(group, {})
+    if name in profiles and not replace:
         raise DistributionError("Profile exists; use --replace-profile deliberately to replace it.")
-    data["profiles"][name] = profile
+    profiles[name] = profile
     # JSON quoted basic strings are valid TOML for the supported single-line fields.
     lines = ["# Nonsecret machine-local configuration. Credentials live in Keychain.\n"]
-    for key, values in data["profiles"].items():
-        lines.append(f"[profiles.{json.dumps(key, ensure_ascii=False)}]")
-        lines.extend(f"{k} = {json.dumps(v, ensure_ascii=False)}" for k, v in values.items())
-        lines.append("")
+    for section, profiles in data.items():
+        if not profiles:
+            lines.extend([f"[{section}]", ""])
+        for key, values in profiles.items():
+            lines.append(f"[{section}.{json.dumps(key, ensure_ascii=False)}]")
+            lines.extend(f"{k} = {json.dumps(v, ensure_ascii=False)}" for k, v in values.items())
+            lines.append("")
     for directory in (path.parent, *path.parent.parents):
         if directory.is_symlink():
             raise DistributionError("Refusing symlinked configuration directory.")

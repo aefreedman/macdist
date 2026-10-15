@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="dashboard-token" content="__SESSION_TOKEN__">
+  <title>macdist · macOS distribution</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" defer></script>
+</head>
+<body>
+  <header>
+    <div><p class="eyebrow">MACDIST · BUILD TOOLS</p><h1>macOS distribution</h1><p class="intro">Follow each build from Apple notarization to sharing on itch.io.</p></div>
+    <span class="badge neutral">Local only</span>
+  </header>
+  <main>
+    <div class="toolbar"><span id="connection" role="status">Connecting…</span><button id="reload">Refresh local files</button></div>
+    <p id="error" class="error" role="alert" hidden></p>
+    <p id="action-status" class="muted" role="status"></p>
+    <section aria-labelledby="runs-heading">
+      <div class="section-heading"><h2 id="runs-heading">Builds</h2><span id="run-count" class="muted"></span></div>
+      <div id="runs" class="run-list"></div>
+      <p id="empty" class="empty" hidden>No builds yet. Create a distribution run using the CLI, then follow its progress here.</p>
+    </section>
+    <details id="logs-panel" class="logs">
+      <summary>Logs <span class="summary-hint">Inspect a run when you need more detail</span></summary>
+      <div class="log-toolbar">
+        <label>Build <select id="log-run"><option value="">Select a run</option></select></label>
+        <label>Log <select id="log-kind"><option value="upload">Upload to Apple</option><option value="pipeline">Processing & packaging</option><option value="apple">Apple report</option><option value="itch">itch upload attempt</option><option value="itch-preview">itch dry run</option><option value="itch-status">itch channel status</option></select></label>
+      </div>
+      <pre id="log" tabindex="0">Select a run to view its log.</pre>
+    </details>
+    <details class="help">
+      <summary>How this dashboard works</summary>
+      <ul>
+        <li>Local files refresh every 3 seconds. Building, submitting, packaging, and publishing happen through the CLI, not this page.</li>
+        <li>Apple acceptance is only one step. Share only the verified distribution ZIP, not the submission ZIP.</li>
+        <li>“Refresh Apple” makes a read-only query using Keychain credentials. It never uploads or changes a run.</li>
+        <li>“Reveal ZIP in Finder” checks the checksum before opening Finder on this Mac. If copying fails, copy the path from Technical details.</li>
+        <li>itch.io status comes from local receipts. Use the CLI for a remote channel check; this page never accesses publishing credentials or uploads.</li>
+        <li>A successful itch upload is not a verified delivery. Download and playtest on another Mac before broader distribution.</li>
+      </ul>
+    </details>
+  </main>
+</body>
+</html>

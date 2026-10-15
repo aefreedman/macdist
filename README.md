@@ -2,15 +2,15 @@
 
 Explicit, resumable Developer ID signing and notarization for **plain macOS application bundles**, including Unity players. Build your app first; macdist stages a copy, signs it, submits it to Apple, staples the accepted ticket, and produces a verified ZIP. It never invokes Unity or changes your original build.
 
-Initial release: CLI only. No hosted service, dashboard, itch publishing, certificate issuance, or automatic release uploads. Python 3.11+, macOS, and current selected Xcode command-line tools are required for real operations. The tool has no runtime Python dependencies.
+Includes a loopback-only monitoring dashboard and an explicit itch.io publishing adapter. No hosted service, certificate issuance, or automatic release uploads. Python 3.11+, macOS, and current selected Xcode command-line tools are required for real operations. The tool has no runtime Python dependencies.
 
 ## Install
 
 Using an isolated tool installer:
 
 ```sh
-pipx install 'git+https://github.com/aefreedman/macdist.git@v0.1.0'
-# Or: uv tool install 'git+https://github.com/aefreedman/macdist.git@v0.1.0'
+pipx install 'git+https://github.com/aefreedman/macdist.git@v0.2.0'
+# Or: uv tool install 'git+https://github.com/aefreedman/macdist.git@v0.2.0'
 ```
 
 For a local checkout:
@@ -158,6 +158,98 @@ macdist cleanup --run /path/to/completed/run
 
 Cleanup revalidates final archive and Accepted evidence, removes only known working artifacts, and preserves the original app, final ZIP, metadata, logs, and unknown files. A failed cleanup can be deliberately resumed after inspection.
 
+## Local dashboard
+
+```sh
+macdist dashboard --project /path/to/game/macdist.toml
+# --port 0 chooses a free port; default is 8765.
+```
+
+Open the printed loopback URL. Only immediate children of that project's configured output directory are inspected. The dashboard works without publishing configuration or `op`/Butler installed.
+
+- Local metadata/log tails refresh every three seconds. Apple queries occur only on an explicit **Refresh Apple** action, are read-only, throttled/coalesced, and never change run state.
+- **Accepted is not Ready.** ZIP actions require packaged state and the expected archive. Reveal rechecks its SHA-256 before invoking Finder. The dashboard does not serve archive downloads.
+- Publishing status comes from local allowlisted receipts only; the dashboard never retrieves publishing secrets, invokes Butler, or uploads. A successful Butler exit is not proof of remote delivery/playability.
+- It binds only `127.0.0.1`, rejects unexpected Host/cross-origin requests, requires a per-process session token for APIs, serves only fixed assets, and renders run data as text rather than HTML.
+- There are **no signing, submission, packaging, retry, or publishing buttons**. The only POST actions are read-only Apple refresh and checksum-checked Finder reveal.
+
+This is a local single-user utility. Do not expose it through tunnels, proxies, public interfaces, or a shared hosted service. Foreign project/team evidence and symlinked artifact paths are rejected. Closing the server clears its in-memory Apple cache, not the evidence on disk.
+
+## Optional itch.io publishing
+
+Publishing is separate from notarization and never runs automatically. Install [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) and [itch Butler](https://itch.io/docs/butler/) on PATH. The initial adapter deliberately retains the dedicated 1Password service-account boundary, rather than borrowing personal `op` or Butler sessions. No raw Butler-key option or personal-login fallback is supported.
+
+### Machine configuration
+
+```sh
+macdist setup-publishing
+```
+
+The wizard asks only for **nonsecret references**. It does not read or validate credentials. Alternatively:
+
+```sh
+macdist setup-publishing --profile example-itch \
+  --api-key-ref 'op://publishing-vault/itch/credential' \
+  --keychain-service example-publishing-token \
+  --keychain-account example-publisher
+```
+
+Create a generic-password item through Keychain Access with that service/item name and account; the password is the **raw publishing-only 1Password service-account token**, not the Butler API key and not an `op://` reference. Restrict the service account to read-only access to a dedicated publishing vault. Do not put raw tokens in terminal commands, chat, shell profiles, or source files.
+
+For CI, the default input is `MACDIST_PUBLISHING_OP_SERVICE_ACCOUNT_TOKEN` from the CI secret store. `--token-env MACDIST_GAME_OP_SERVICE_ACCOUNT_TOKEN` gives a local publishing profile a distinct input variable. Only `MACDIST_*OP_SERVICE_ACCOUNT_TOKEN` names are accepted. If the configured variable is present but empty/invalid, the command fails; it does not fall back to Keychain.
+
+`setup-publishing` stores this outside game/tool repositories:
+
+```toml
+[publishing_profiles.example-itch]
+api_key_ref = "op://publishing-vault/itch/credential"
+token_env = "MACDIST_PUBLISHING_OP_SERVICE_ACCOUNT_TOKEN"
+keychain_service = "example-publishing-token"
+keychain_account = "example-publisher"
+```
+
+The existing signing and publishing profiles are preserved; replacement requires `--replace-profile`.
+
+### Project destination
+
+Opt in by adding this to the game's `macdist.toml`:
+
+```toml
+[publishing.itch]
+target = "example/game"
+channel = "MacOS"
+profile = "example-itch"
+```
+
+The target and case-sensitive channel are project-owned and have no CLI override. Secret references and Keychain identifiers stay machine-local. See `examples/publishing-project.toml` and `examples/user-config.toml`. Configured publishing profiles must exist even when opening that project's dashboard, but no credentials are retrieved by the dashboard.
+
+### Preview, select, upload, inspect
+
+```sh
+# Read-only Butler file preview. Accesses publishing credentials; never uploads.
+macdist publish --project /path/to/game/macdist.toml --run /path/to/run --dry-run
+
+# Explicit automation-friendly upload; may become available immediately on itch.
+macdist publish --project /path/to/game/macdist.toml --run /path/to/run --upload
+
+# Interactive selection, exact destination/hash/version display, then [y/N] confirmation.
+macdist pick-itch --project /path/to/game/macdist.toml
+macdist pick-itch --project /path/to/game/macdist.toml --dry-run
+
+# Read-only remote channel snapshot, not per-attempt reconciliation.
+macdist publish-status --project /path/to/game/macdist.toml --run /path/to/run
+```
+
+Omitting a publishing mode never uploads. The picker requires selection even with one build; Enter, `0`, EOF, and default-No cancel before credential access. There is no implicit latest-build choice or confirmation bypass. It filters builds by the project's bundle ID and release team, then rechecks the confirmed artifact/version under the same operation lock used by notarization and cleanup.
+
+Uploads require a packaged, unchanged final ZIP, recorded build version, and matching Accepted Apple UUID/archive-hash evidence. The existing run's original app, ZIP, and notarization state remain unchanged. Butler receives the versioned ZIP directly, without permission-fixing, link-dereferencing, visibility/access, or ignore overrides. A second checksum check catches input changes during execution.
+
+Each attempt has an immutable-ID receipt/log under `publishing/itch/`. A summary blocks repeat uploads even after a dry run or status check. `--retry-upload` is required after inspecting a previous attempt; it does not bypass evidence checks. Changing a run's recorded publishing destination is rejected even with that flag. Lost responses, nonzero exits, timeouts, and interruptions remain **uncertain**, never automatically retried. `uploaded` means Butler exited successfully; `delivery_verified` stays false and remote build IDs are not guessed from human-readable output.
+
+The subprocess chain is environment-allowlisted: only the dedicated token and configured Butler reference reach `op run`. An isolated Python worker gives Butler only its resolved API key, disables Butler's saved identity with `--identity /dev/null`, and redacts known credentials before output reaches logs. Personal `OP_SESSION_*`, Connect settings, generic service-account tokens, unrelated references, and normal Butler login are not inherited. Errors never trigger another credential source or login. Credential-bearing processes and descendants are terminated on timeout/interruption.
+
+Download through itch on a separate Mac/user account and verify extraction, Gatekeeper, launch, and gameplay without overrides. Test itch-app install/update separately if you intend to support it. Existing itch visibility/access restrictions determine availability; macdist never changes them.
+
 ## Verification and limitations
 
 Code is discovered as Mach-O, signed leaves-first and nested bundles next, then the outer app last. `--deep` is used for verification, **not signing**. Signing enables hardened runtime and secure timestamps. Entitlements are applied to main executables and app/XPC bundles, not every dylib. Each architecture is checked; the final archive is extracted and checked again for signatures, staple, and Gatekeeper acceptance.
@@ -174,8 +266,8 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Tests use mocks and local fixtures: no real signing, Keychain mutation, Apple requests, or uploads. CI tests Python 3.11 and 3.14 on Linux and macOS. A real app signing/notarization smoke test is still required before adopting a release for production.
+Tests use mocks, local subprocess fixtures, and temporary loopback HTTP servers: no real signing, Keychain mutation, Apple requests, or uploads. Run `node tests/test_dashboard_ui.js` for the dependency-free frontend regression checks (Node.js 22+ is a development dependency only). CI tests Python 3.11 and 3.14 on Linux and macOS. A real app signing/notarization smoke test is still required before adopting a release for production.
 
-The initial engine and safety tests were extracted from existing project-local Unity distribution tooling, without importing its project history, credentials, publishing configuration, or release artifacts. Publishing and the dashboard are deferred so this repository starts with a focused core.
+The engine, dashboard, publishing adapter, and safety tests were extracted from owner-authorized project-local Unity distribution tooling, without importing its project history, credentials, machine-specific configuration, or release artifacts. Examples use fictional destinations; no publishing destination is enabled by default.
 
 References: [Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution), [Unity macOS signing](https://docs.unity3d.com/6000.5/Documentation/Manual/macoscodesigning.html). Review documentation for your actual Unity version, not just the linked example.
