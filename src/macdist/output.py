@@ -11,11 +11,12 @@ import sys
 import time
 
 _current = ContextVar("macdist_reporter", default=None)
-ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[78])")
 
 
 def clean(value):
     value = ANSI.sub("", str(value))
+    value = re.sub(r"[\r\n\t]+", " ", value)
     return "".join(c for c in value if ord(c) >= 32 and not 127 <= ord(c) < 160)
 
 
@@ -112,20 +113,35 @@ class UploadProgress:
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.pending = ""
         self.dropping = False
+        self.escape = False
         self.reporter = current() or Reporter()
 
     def feed(self, chunk, final=False):
         text = self.decoder.decode(chunk, final=final)
-        for part in re.split(r"([\r\n])", text):
-            if part in ("\r", "\n"):
+        for character in text:
+            if self.escape:
+                self.escape = False
+                if character in "78":
+                    # notarytool redraws with DEC save/restore cursor rather than
+                    # newlines. The ESC and its digit may arrive in separate reads.
+                    self.frame()
+                    continue
+                self.append("\x1b")
+            if character == "\x1b":
+                self.escape = True
+            elif character in "\r\n":
                 self.frame()
-            elif not self.dropping:
-                self.pending += part
-                if len(self.pending) > 65536:
-                    self.pending = ""
-                    self.dropping = True
+            else:
+                self.append(character)
         if final:
             self.frame()
+
+    def append(self, text):
+        if not self.dropping:
+            self.pending += text
+            if len(self.pending) > 65536:
+                self.pending = ""
+                self.dropping = True
 
     def frame(self):
         if not self.dropping:

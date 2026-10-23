@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tomllib
 
-from . import __version__, engine, publish, output
+from . import __version__, engine, publish, output, build_info
 from .config import load_project, user_config_path
 from .setup import identities, setup
 
@@ -51,6 +51,7 @@ def parser():
             command.add_argument("--submission-id", required=True)
         if name == "cleanup":
             command.add_argument("--keep-app", action="store_true")
+    commands.add_parser("build-info", help="Show offline installed version, VCS commit when available, and executable path")
     command = commands.add_parser("inspect", help="Bounded local snapshot; no Apple requests or run mutations")
     command.add_argument("--run", type=Path, required=True)
     command = commands.add_parser("setup-publishing", help="Configure nonsecret publishing references; never reads credentials")
@@ -113,6 +114,11 @@ def _dispatch(args):
     if args.command == "dashboard" and not 0 <= args.port <= 65535:
         root.error("Port must be between 0 and 65535.")
     try:
+        if args.command == "build-info":
+            report = build_info.info()
+            output.event("build.info", json.dumps(report, indent=2), report=report)
+            output.result(build_info=report)
+            return 0
         if args.command == "inspect":
             from .inspection import snapshot
             report = snapshot(args.run)
@@ -177,7 +183,9 @@ def main(argv=None):
         reporter.run = args.run.expanduser().absolute()
     with output.reporting(reporter):
         reporter.result["ready"] = False
-        output.event("workflow.started", "Command: " + args.command, command=args.command)
+        identity = build_info.info()
+        output.event("workflow.started", "Command: " + args.command, command=args.command,
+                     tool_version=identity["version"], source_commit=identity["source_commit"])
         if reporter.mode == "jsonl" and args.command in ("setup", "setup-publishing", "pick-itch", "dashboard"):
             output.event("workflow.error", "JSONL is for noninteractive workflow commands; use human/plain output for setup, the picker, and dashboard.")
             code = 1

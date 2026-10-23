@@ -6,12 +6,14 @@ Includes a loopback-only monitoring dashboard and an explicit itch.io publishing
 
 ## Install
 
-Using an isolated tool installer:
+Using an isolated tool installer, replace `FULL_REVIEWED_COMMIT` with the exact reviewed Git commit:
 
 ```sh
-pipx install 'git+https://github.com/aefreedman/macdist.git@v0.2.0'
-# Or: uv tool install 'git+https://github.com/aefreedman/macdist.git@v0.2.0'
+pipx install 'git+https://github.com/aefreedman/macdist.git@FULL_REVIEWED_COMMIT'
+# Or: uv tool install 'git+https://github.com/aefreedman/macdist.git@FULL_REVIEWED_COMMIT'
 ```
+
+The source version is now **0.3.0**. Existing `v0.2.0` installations predate the structured-output update; do not expect new commands from that tag. A version bump does not update an existing installation automatically, and an unreleased source version does not imply a matching Git tag exists.
 
 For a local checkout:
 
@@ -21,7 +23,29 @@ python3 -m venv .venv
 .venv/bin/macdist --help
 ```
 
-Pin a tag or commit in automation. This distribution name has not been published to PyPI; do not assume `pip install macdist` installs this project.
+Pin an existing reviewed tag or full commit in automation. This distribution name has not been published to PyPI; do not assume `pip install macdist` installs this project.
+
+### Verify the installed tool, not just a checkout
+
+```sh
+macdist --version
+macdist build-info --output jsonl
+```
+
+`build-info` is offline and requires no project or credentials. It reports the code version, installed distribution version, Python executable, editable-install status, and exact source commit when pip's VCS installation metadata provides it. It never invokes Git, reads credential stores, or prints the origin URL (which could contain credentials). A normal wheel/local/editable installation may have `source_commit: null`; the current checkout's HEAD is **not** a substitute for installed provenance. `workflow.started` also includes the tool version and available source commit.
+
+When upgrading a dedicated venv from a pinned requirements file, use that venv's interpreter:
+
+```sh
+/path/to/macdist/venv/bin/python -m pip install --force-reinstall --no-deps -r /path/to/pinned-requirements.txt
+/path/to/macdist/venv/bin/macdist build-info --output jsonl
+```
+
+Review the new pin and compare the reported commit with it. This also avoids pip retaining an older installation when two historical source snapshots share a version number. Keep editable development installs separate from pinned release tooling.
+
+### PATH in agent and non-login shells
+
+Tool installers commonly expose executables in `~/.local/bin`, which may not be on an agent session's PATH. Check `command -v macdist`; if absent, use the installer's actual executable path, for example `"$HOME/.local/bin/macdist" build-info --output jsonl`. For a manually managed venv, use its `bin/macdist` directly. If desired, explicitly configure `export PATH="$HOME/.local/bin:$PATH"` in the appropriate shell/session setup. macdist does not change shell files or PATH, create links, or reinstall another tool automatically.
 
 ## Configuration boundaries
 
@@ -155,6 +179,8 @@ transcripts remain in the run's logs; publishing logs retain their existing
 credential redaction. Console progress is coalesced: duplicate/regressing
 percentages are dropped, updates are at least one second apart and normally at
 least five points or ten seconds apart, and a reported 100% is emitted immediately.
+Both CR/LF updates and Apple's newline-free DEC cursor-save/restore (`ESC 7`/`ESC 8`)
+frames are parsed incrementally, including escape sequences split across reads.
 Only percentages actually reported by the tool are displayed. Apple processing
 is a named waiting stage, **not** a simulated percentage or inferred completion.
 

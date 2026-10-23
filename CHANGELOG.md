@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (unreleased)
+
+- Bump the source/package version from 0.2.0 to distinguish the structured-output
+  update from older installations. Add offline `build-info` with the installed VCS
+  commit when available, distribution version, editable status, and executable;
+  never expose origin URLs or guess installed provenance from a checkout's HEAD.
+- Include tool version and available source commit in `workflow.started` events.
+- Fix missing live Apple percentages when notarytool uses newline-free DEC
+  cursor-save/restore frames (`ESC 7`/`ESC 8`). Handle split escape sequences,
+  preserve throttling, and retain the original raw transcript without changing
+  submission, acceptance, or retry decisions.
+- Preserve spaces at newline/tab boundaries in JSONL messages instead of joining
+  filenames, checksums, and other words together. Strip cursor controls cleanly.
+- Document pinned-commit upgrades, installation verification, and explicit
+  executable paths for sessions without `~/.local/bin` on PATH. No shell changes
+  or automatic installation updates are performed.
 
 - Add `--output auto|human|plain|jsonl` before or after workflow subcommands.
   Auto retains terminal progress rendering while captured output uses compact,
@@ -19,8 +34,9 @@
 - Reject JSONL for interactive setup, the build picker, and the dashboard before
   dispatch. Preserve upload authorization, credential isolation, confirmation,
   evidence verification, and retry guards; no Pi-specific dependencies.
-- Add output, inspection, and safety regressions: 154 Python tests plus frontend
-  checks pass locally, from an installed wheel, and in macOS/Linux CI.
+- Add output, inspection, and safety regressions, including synthetic Apple
+  cursor-frame transcripts and every chunk split, message boundaries, and
+  credential-safe installation metadata. Keep tests offline.
 
 ## 0.2.0
 

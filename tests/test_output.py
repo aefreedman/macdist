@@ -64,6 +64,43 @@ class OutputTests(unittest.TestCase):
         self.assertNotIn("\x1b", stream.getvalue())
         self.assertNotIn("\r", stream.getvalue())
 
+    def test_dec_cursor_progress_is_live_without_newlines_or_eof(self):
+        stream = io.StringIO()
+        clock = [0.0]
+        with output.reporting(output.Reporter("jsonl", stream, clock=lambda: clock[0])):
+            parser = output.UploadProgress()
+            for percent in (0, 25, 50, 100):
+                clock[0] += 5
+                parser.feed(f"\x1b7Upload progress: {percent:.2f}% (fixture bytes)   \x1b8".encode())
+                self.assertEqual(records(stream)[-1]["percent"], percent)
+                self.assertEqual(parser.pending, "")
+        self.assertEqual([event["percent"] for event in records(stream)], [0, 25, 50, 100])
+
+    def test_dec_cursor_frames_handle_every_chunk_split(self):
+        data = b"\x1b7Upload progress: 0.00% (Zero KB of 900 MB)   \x1b8\x1b7Upload progress: 100.00% (900 MB of 900 MB)   \x1b8"
+        for split in range(len(data) + 1):
+            stream = io.StringIO()
+            with output.reporting(output.Reporter("jsonl", stream)):
+                parser = output.UploadProgress()
+                parser.feed(data[:split])
+                parser.feed(data[split:])
+            self.assertEqual([event["percent"] for event in records(stream)], [0, 100], split)
+            self.assertNotIn("\x1b", stream.getvalue())
+
+    def test_cursor_frames_recover_after_oversized_diagnostic(self):
+        stream = io.StringIO()
+        with output.reporting(output.Reporter("jsonl", stream)):
+            parser = output.UploadProgress()
+            parser.feed(b"x" * 100000 + b"\x1b7Upload progress: 100%\x1b8")
+        self.assertEqual(records(stream)[0]["percent"], 100)
+
+    def test_jsonl_messages_preserve_word_boundaries(self):
+        stream = io.StringIO()
+        reporter = output.Reporter("jsonl", stream)
+        reporter.emit("test", "ZIP: fixture.zip\r\nSHA-256: value\nInput:\tfixture")
+        self.assertEqual(records(stream)[0]["message"], "ZIP: fixture.zip SHA-256: value Input: fixture")
+        self.assertEqual(output.clean("\x1b7one\x1b8\nnext"), "one next")
+
     def test_parser_bounds_unterminated_frames_and_recovers(self):
         stream = io.StringIO()
         with output.reporting(output.Reporter("jsonl", stream)):
@@ -103,6 +140,10 @@ class WorkflowOutputTests(unittest.TestCase):
         with redirect_stdout(stdout), redirect_stderr(stderr):
             code = cli.main(["--output", "jsonl", *args])
         return code, records(stdout), stderr.getvalue()
+
+    def test_inspect_recognizes_historical_cursor_progress(self):
+        (self.run / "upload-progress.log").write_bytes(b"\x1b7Upload progress: 25.00% (fixture)\x1b8\x1b7Upload progress: 100.00% (fixture)\x1b8")
+        self.assertEqual(snapshot(self.run)["last_upload_percent"], 100)
 
     def test_inspect_is_local_read_only_and_allowlists_fields(self):
         self.state["private_extra"] = "must-not-appear"
