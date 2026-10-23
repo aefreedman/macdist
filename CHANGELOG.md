@@ -1,7 +1,11 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0 - 2026-10-23
 
+- Add a tag-driven GitHub release workflow for validated wheel/source archives,
+  checksums, a source-commit manifest, and changelog release notes. Run the full
+  macOS/Linux test matrix before publication; manual dispatch only builds/tests.
+  No PyPI credentials, Apple credentials, or app publishing are involved.
 - Bump the source/package version from 0.2.0 to distinguish the structured-output
   update from older installations. Add offline `build-info` with the installed VCS
   commit when available, distribution version, editable status, and executable;

@@ -9,3 +9,6 @@
   acceptance, staged copies, and fail-closed recovery/cleanup behavior.
 - Per-project entitlements must be explicit. Never introduce permissive defaults.
 - Run: python -m unittest discover -s tests -v (with the package installed).
+- Package release procedure: docs/releasing.md. Creating/pushing a release tag is
+  publication, not a smoke test; it requires explicit operator authorization.
+  Preserve HTTPS remotes and least-privilege build/test/publish job boundaries.

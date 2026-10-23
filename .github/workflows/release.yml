@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing vX.Y.Z tag to build/test without publishing"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      commit: ${{ steps.identity.outputs.commit }}
+      version: ${{ steps.identity.outputs.version }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require an existing stable tag on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          commit=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")
+          test "$commit" = "$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+      - name: Validate tag, versions, and finalized changelog
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python scripts/release.py check --tag "$RELEASE_TAG")
+          printf 'tag=%s\nversion=%s\ncommit=%s\n' "$RELEASE_TAG" "$version" "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build wheel and source archive
+        run: |
+          python -m pip install build==1.3.0 twine==6.2.0
+          python -m build
+          python -m twine check --strict dist/*
+      - name: Validate archives and prepare release evidence
+        env:
+          RELEASE_COMMIT: ${{ steps.identity.outputs.commit }}
+        run: python scripts/release.py prepare --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --dist dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-bundle
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true # Rebuild CI artifacts on a rerun; published release assets are never overwritten.
+
+  test:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.14"]
+    runs-on: ${{ matrix.os }}
+    env:
+      EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-bundle
+          path: dist
+      - name: Verify checksums and test the actual wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && shasum -a 256 -c SHA256SUMS)
+          python -m pip install --no-deps dist/*.whl
+          test "$(macdist --version)" = "$EXPECTED_VERSION"
+          python -m unittest discover -s tests -v
+          node tests/test_dashboard_ui.js
+          macdist build-info --output jsonl
+      - name: Smoke-test an isolated installation from the source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/sdist-venv"
+          "$RUNNER_TEMP/sdist-venv/bin/python" -m pip install --no-deps dist/*.tar.gz
+          test "$("$RUNNER_TEMP/sdist-venv/bin/macdist" --version)" = "$EXPECTED_VERSION"
+          "$RUNNER_TEMP/sdist-venv/bin/macdist" --help
+          mkdir "$RUNNER_TEMP/source-check"
+          tar -xzf "dist/macdist-$EXPECTED_VERSION.tar.gz" -C "$RUNNER_TEMP/source-check"
+          (cd "$RUNNER_TEMP/source-check/macdist-$EXPECTED_VERSION" && "$RUNNER_TEMP/sdist-venv/bin/python" -m unittest discover -s tests -v && node tests/test_dashboard_ui.js)
+          "$RUNNER_TEMP/sdist-venv/bin/python" -c 'from importlib.resources import files; assert all(files("macdist").joinpath(name).is_file() for name in ("dashboard.html", "dashboard.js", "dashboard.css"))'
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+    steps:
+      # No repository checkout or execution of package code in the write-token job.
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-bundle
+          path: dist
+      - name: Recheck remote identity, then publish the verified bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c SHA256SUMS)
+          jq -e --arg tag "$RELEASE_TAG" --arg version "$RELEASE_VERSION" --arg commit "$RELEASE_COMMIT" \
+            '.schema == 1 and .project == "macdist" and .tag == $tag and .version == $version and .commit == $commit' dist/release.json >/dev/null
+          test "$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
+          ancestry=$(gh api "repos/$GH_REPO/compare/$RELEASE_COMMIT...main" --jq .status)
+          [[ "$ancestry" == identical || "$ancestry" == ahead ]]
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'Release already exists. Inspect it; this workflow never overwrites published assets or resumes a partial draft automatically.' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --draft \
+            --title "macdist $RELEASE_VERSION" --notes-file dist/release-notes.md \
+            dist/*.whl dist/*.tar.gz dist/SHA256SUMS dist/release.json dist/release-notes.md
+          gh release edit "$RELEASE_TAG" --draft=false --latest

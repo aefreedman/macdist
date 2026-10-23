@@ -6,14 +6,14 @@ Includes a loopback-only monitoring dashboard and an explicit itch.io publishing
 
 ## Install
 
-Using an isolated tool installer, replace `FULL_REVIEWED_COMMIT` with the exact reviewed Git commit:
+Using an isolated tool installer, replace `FULL_REVIEWED_COMMIT` with the exact reviewed Git commit (or an existing published version tag such as `v0.3.0`):
 
 ```sh
 pipx install 'git+https://github.com/aefreedman/macdist.git@FULL_REVIEWED_COMMIT'
 # Or: uv tool install 'git+https://github.com/aefreedman/macdist.git@FULL_REVIEWED_COMMIT'
 ```
 
-The source version is now **0.3.0**. Existing `v0.2.0` installations predate the structured-output update; do not expect new commands from that tag. A version bump does not update an existing installation automatically, and an unreleased source version does not imply a matching Git tag exists.
+The current version is **0.3.0**. Existing `v0.2.0` installations predate the structured-output update; do not expect new commands from that tag. A version bump does not update an existing installation automatically. Check [GitHub Releases](https://github.com/aefreedman/macdist/releases) before using a tag; a source version does not itself imply publication. Releases provide wheel/source archives, checksums, changelog notes, and a source-commit manifest. See [the release procedure](docs/releasing.md) for validation and publication gates.
 
 For a local checkout:
 
