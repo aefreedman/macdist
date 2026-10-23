@@ -19,7 +19,7 @@ import termios
 import time
 import uuid
 
-from . import engine as distribute
+from . import engine as distribute, output
 
 
 TOKEN_ENV = "MACDIST_PUBLISHING_OP_SERVICE_ACCOUNT_TOKEN"
@@ -209,6 +209,12 @@ class LiveConsole:
         self.active = False
 
     def emit(self, line):
+        reporter = output.current()
+        if reporter is not None and reporter.mode != "human":
+            percentages = re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*%", line)
+            if percentages:
+                reporter.progress("publishing.upload", float(percentages[-1]))
+            return  # Full, already-redacted output is retained in the attempt log.
         progress = re.search(r"\d+(?:\.\d+)?\s*%|(?:[KMGT]?i?B|bytes)/s|\bETA\b", line, re.IGNORECASE)
         if self.stream.isatty() and progress:
             self.stream.write("\r\x1b[2K" + line)
@@ -333,8 +339,9 @@ def publish(run, config, mode, retry_upload=False, timeout=3600, invoke_command=
                 distribute.save_json(inspection, receipt)
 
         save()
+        output.result(receipt=str(receipt_path), delivery_verified=False)
         destination = itch["target"] + ":" + itch["channel"]
-        print(f"{mode}: {destination} · {version}\nInput: {archive}\nSHA-256: {state['final_sha256']}", flush=True)
+        output.event("publishing.started", f"{mode}: {destination} · {version}\nInput: {archive}\nSHA-256: {state['final_sha256']}", mode=mode, destination=destination, version=version, archive=str(archive), receipt=str(receipt_path), log=str(log_path))
         arguments = [str(archive), destination, "--userversion", version]
         if mode == "dry_run":
             arguments.append("--dry-run")
@@ -372,7 +379,8 @@ def publish(run, config, mode, retry_upload=False, timeout=3600, invoke_command=
         finally:
             receipt["finished_at"] = timestamp()
             save()
-        print(f"Receipt: {receipt_path}", flush=True)
+        output.event("publishing.completed", "Receipt: " + str(receipt_path), status=receipt["status"], receipt=str(receipt_path), delivery_verified=False)
+        output.result(publishing_status=receipt["status"], receipt=str(receipt_path), delivery_verified=False)
         return receipt
 
 

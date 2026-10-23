@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tomllib
 
-from . import __version__, engine, publish
+from . import __version__, engine, publish, output
 from .config import load_project, user_config_path
 from .setup import identities, setup
 
@@ -17,6 +17,7 @@ def parser():
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--version", action="version", version=__version__)
     root.add_argument("--user-config", type=Path, default=user_config_path())
+    root.add_argument("--output", choices=("auto", "human", "plain", "jsonl"), default="auto", help="Presentation only: auto selects human for terminals, plain for pipes")
     commands = root.add_subparsers(dest="command", required=True)
     command = commands.add_parser("setup", help="Configure a machine-local signing profile")
     command.add_argument("--profile")
@@ -50,6 +51,8 @@ def parser():
             command.add_argument("--submission-id", required=True)
         if name == "cleanup":
             command.add_argument("--keep-app", action="store_true")
+    command = commands.add_parser("inspect", help="Bounded local snapshot; no Apple requests or run mutations")
+    command.add_argument("--run", type=Path, required=True)
     command = commands.add_parser("setup-publishing", help="Configure nonsecret publishing references; never reads credentials")
     for name in ("profile", "api-key-ref", "keychain-service", "keychain-account", "token-env"):
         command.add_argument("--" + name)
@@ -71,6 +74,8 @@ def parser():
                 command.add_argument("--dry-run", action="store_true")
             if name in ("publish", "pick-itch"):
                 command.add_argument("--retry-upload", action="store_true")
+    for command in commands.choices.values():
+        command.add_argument("--output", choices=("auto", "human", "plain", "jsonl"), default=argparse.SUPPRESS)
     return root
 
 
@@ -90,16 +95,16 @@ def doctor(project, args):
             runner.json(["/usr/bin/xcrun", "notarytool", "history", "--keychain-profile",
                          project.config["keychain_profile"], "--output-format", "json"], timeout=60)
         report = {"identity_sha1": matches[0], "credentials_checked": args.check_credentials}
-    print(json.dumps({"project": str(project.path), "config": project.config,
-                      "entitlements": str(project.entitlements), **report}, indent=2))
+    report = {"project": str(project.path), "config": project.config,
+              "entitlements": str(project.entitlements), **report}
+    output.event("doctor.completed", json.dumps(report, indent=2), report=report)
     if not args.check_credentials:
-        print("Notarization credentials were NOT checked; add --check-credentials to contact Apple.")
+        output.event("credentials.unchecked", "Notarization credentials were NOT checked; add --check-credentials to contact Apple.")
     return 0
 
 
-def main(argv=None):
+def _dispatch(args):
     root = parser()
-    args = root.parse_args(argv)
     if args.command in ("publish", "publish-status", "pick-itch"):
         if not 1 <= args.timeout <= 14400:
             root.error("Timeout must be between 1 and 14400 seconds.")
@@ -108,6 +113,12 @@ def main(argv=None):
     if args.command == "dashboard" and not 0 <= args.port <= 65535:
         root.error("Port must be between 0 and 65535.")
     try:
+        if args.command == "inspect":
+            from .inspection import snapshot
+            report = snapshot(args.run)
+            output.event("run.snapshot", json.dumps(report, indent=2), snapshot=report)
+            output.result(snapshot=report)
+            return 0
         if args.command == "setup":
             setup(args)
             return 0
@@ -141,17 +152,54 @@ def main(argv=None):
                 if not args.name.strip() or any(ord(c) < 32 for c in args.name) or args.name in (".", "..") or Path(args.name).name != args.name or "\\" in args.name:
                     raise engine.DistributionError("Run name must be a single directory name.")
                 args.run = project.runs_dir / args.name
+        if output.current() is not None and getattr(args, "run", None) is not None:
+            output.current().run = args.run.expanduser().resolve()
         return engine.execute(args, config)
     except publish.PublishingError as error:
-        print(f"Publishing stopped: {error}", file=sys.stderr)
+        output.event("workflow.error", f"Publishing stopped: {error}", error_type=type(error).__name__)
         return 1
     except (engine.DistributionError, OSError, ValueError, TypeError, KeyError,
             plistlib.InvalidFileException, tomllib.TOMLDecodeError, subprocess.SubprocessError) as error:
         if args.command in ("publish", "publish-status", "pick-itch"):
-            print("Publishing stopped. Inspect configuration and retained evidence; no retry or credential fallback attempted.", file=sys.stderr)
+            output.event("workflow.error", "Publishing stopped. Inspect configuration and retained evidence; no retry or credential fallback attempted.", error_type=type(error).__name__)
         else:
-            print(f"STOP: {error}", file=sys.stderr)
+            output.event("workflow.error", f"STOP: {error}", error_type=type(error).__name__)
         return 1
     except (KeyboardInterrupt, EOFError):
-        print("Stopped. Inspect run evidence before retrying an interrupted operation.", file=sys.stderr)
+        output.event("workflow.error", "Stopped. Inspect run evidence before retrying an interrupted operation.", error_type="Interrupted")
         return 130
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    reporter = output.Reporter(args.output)
+    if getattr(args, "run", None) is not None:
+        reporter.run = args.run.expanduser().absolute()
+    with output.reporting(reporter):
+        reporter.result["ready"] = False
+        output.event("workflow.started", "Command: " + args.command, command=args.command)
+        if reporter.mode == "jsonl" and args.command in ("setup", "setup-publishing", "pick-itch", "dashboard"):
+            output.event("workflow.error", "JSONL is for noninteractive workflow commands; use human/plain output for setup, the picker, and dashboard.")
+            code = 1
+        else:
+            try:
+                code = _dispatch(args)
+            except SystemExit as error:
+                reporter.emit("workflow.result", "Invalid command arguments", command=args.command,
+                              status="invalid", exit_code=int(error.code or 0))
+                raise
+        status = "succeeded" if code == 0 else "pending" if code == 2 else "interrupted" if code == 130 else "failed"
+        if reporter.run is not None and (reporter.run / "state.json").exists():
+            from .inspection import snapshot
+            try:
+                local = snapshot(reporter.run)
+                reporter.result.update(stage=local["stage"], submission_id=local["submission_id"],
+                                       evidence=local["paths"])
+                if code not in (0, 2) and (local["stage"] in ("submission_attempted", "uploading")
+                                           or local.get("publishing", {}).get("status") == "uncertain"):
+                    status = "uncertain"
+            except (engine.DistributionError, OSError, ValueError, TypeError, KeyError):
+                pass  # Reporting must not overwrite or repair evidence after an error.
+        reporter.emit("workflow.result", f"Result: {status} (exit {code})", command=args.command,
+                      status=status, exit_code=code, **reporter.result)
+        return code

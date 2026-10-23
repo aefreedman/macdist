@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add presentation-only auto/human/plain/JSONL output with versioned events,
+  throttled Apple/publishing progress, named waiting stages, and final results.
+- Retain raw Apple and redacted publishing evidence without flooding agent output.
+- Add bounded, read-only local inspect snapshots; never infer readiness or retry
+  permission from progress or a missing event. No Pi-specific dependencies.
+
 ## 0.2.0
 
 - Port the existing owner-authorized local dashboard, itch adapter, credential

@@ -19,7 +19,7 @@ import tempfile
 import time
 import uuid
 
-from . import __version__
+from . import __version__, output
 
 
 MACHO_MAGICS = {
@@ -159,7 +159,7 @@ class Runner:
 
     def run(self, argv, timeout=300):
         self.sequence += 1
-        print("Running:", " ".join(str(arg) for arg in argv), flush=True)
+        output.command(argv)
         try:
             completed = subprocess.run([str(a) for a in argv], capture_output=True, text=True, timeout=timeout)
             evidence = {"argv": [str(a) for a in argv], "exit_code": completed.returncode,
@@ -179,7 +179,8 @@ class Runner:
     def stream(self, argv, on_output, timeout=900):
         """Stream normal notarytool progress while persisting submission identity early."""
         self.sequence += 1
-        print("Running:", " ".join(str(arg) for arg in argv), flush=True)
+        output.command(argv)
+        progress = output.UploadProgress()
         transcript = ""
         deadline = time.monotonic() + timeout
         evidence = {"argv": [str(a) for a in argv]}
@@ -212,8 +213,9 @@ class Runner:
                                     log.write(chunk)
                                     decoded = chunk.decode("utf-8", errors="replace")
                                     transcript += decoded
-                                    print(decoded, end="", flush=True)
                                     on_output(transcript)
+                                    progress.feed(chunk)
+                        progress.feed(b"", final=True)
                         code = process.wait(timeout=max(1, deadline - time.monotonic()))
                         evidence["exit_code"] = code
                         if code:
@@ -341,6 +343,7 @@ def prepare(app, run, config, entitlements, runner=None):
     state = {"schema": 1, "tool_version": __version__, "stage": "preparing", "config": config, "source": report,
              "app_name": app.name, "submission_id": None}
     save_json(run / "state.json", state)
+    output.event("signing.started", "Preparing and signing staged app", run=str(run))
     with locked(run):
         (run / "staged").mkdir()
         staged = staged_app(run, state)
@@ -363,6 +366,8 @@ def prepare(app, run, config, entitlements, runner=None):
         state["archive_sha256"] = sha256(run / "submission.zip")
         state["stage"] = "signed"
         save_json(run / "state.json", state)
+    output.event("signing.completed", "Signed; submission ZIP prepared", archive=str(run / "submission.zip"))
+    output.result(stage="signed", ready=False)
     return run
 
 
@@ -384,9 +389,10 @@ def submit(run, state, runner, progress=False):
     # Write before dispatch: even a crash or lost response must not permit a second upload.
     state["stage"] = "submission_attempted"
     save_json(run / "state.json", state)
+    output.event("upload.started", "Uploading to Apple", archive=str(run / "submission.zip"), progress_log=str(run / "upload-progress.log") if progress else None)
     if progress:
-        def remember_identifier(output):
-            identifiers = re.findall(r"\bid:\s*([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})", output)
+        def remember_identifier(transcript):
+            identifiers = re.findall(r"\bid:\s*([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})", transcript)
             for value in identifiers:
                 identifier = submission_id(value)
                 if state["submission_id"] and state["submission_id"] != identifier:
@@ -395,6 +401,7 @@ def submit(run, state, runner, progress=False):
                     state["submission_id"] = identifier
                     state["stage"] = "uploading"
                     save_json(run / "state.json", state)
+                    output.event("submission.recorded", "Submission ID recorded: " + identifier, submission_id=identifier)
         runner.stream(["/usr/bin/xcrun", "notarytool", "submit", run / "submission.zip", "--no-wait",
                        "--keychain-profile", state["config"]["keychain_profile"],
                        "--output-format", "normal", "--progress"], remember_identifier, timeout=900)
@@ -406,13 +413,17 @@ def submit(run, state, runner, progress=False):
         state["submission_id"] = submission_id(response.get("id"))
     state["stage"] = "submitted"
     save_json(run / "state.json", state)
-    print("Submission ID:", state["submission_id"])
+    if not progress:
+        output.event("submission.recorded", "Submission ID: " + state["submission_id"], submission_id=state["submission_id"])
+    output.event("upload.completed", "Upload completed; awaiting Apple processing", submission_id=state["submission_id"])
+    output.result(stage="submitted", ready=False, submission_id=state["submission_id"])
 
 
 def check_submission(run, state, runner, wait=False):
     identifier = submission_id(state.get("submission_id"))
     assert_unchanged(run, state)
     if wait:
+        output.event("notarization.waiting", "Waiting for Apple processing (no percentage available)", submission_id=identifier)
         # Wait on the known ID only. A wait timeout leaves that ID available for resume.
         runner.json(["/usr/bin/xcrun", "notarytool", "wait", identifier, "--timeout", "20m"]
                     + notary_arguments(state), timeout=1230)
@@ -422,7 +433,8 @@ def check_submission(run, state, runner, wait=False):
     status = response.get("status")
     state["notary_status"] = status
     save_json(run / "state.json", state)
-    print("Notarization:", status)
+    output.event("notarization.status", "Notarization: " + str(status), status=status, submission_id=identifier)
+    output.result(notary_status=status, submission_id=identifier, ready=False)
     if status == "In Progress":
         return False
     if status not in ("Accepted", "Invalid", "Rejected"):
@@ -524,7 +536,7 @@ def cleanup(run, state, keep_app=False):
     receipt.update(status="complete", completed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                    final_app_retained=owned_path(run, Path("final") / state["app_name"]).exists())
     save_json(run / "state.json", state)
-    print("Working artifacts cleaned; final ZIP and evidence retained:", archive)
+    output.event("cleanup.completed", "Working artifacts cleaned; final ZIP and evidence retained: " + str(archive), archive=str(archive))
 
 
 def package(run, state, runner, keep_working_artifacts=False):
@@ -535,6 +547,7 @@ def package(run, state, runner, keep_working_artifacts=False):
     if final_directory.exists():
         raise DistributionError("Final directory already exists; inspect it, do not overwrite/retry automatically.")
     # Keep the submitted, signed app immutable; staple a separate final copy.
+    output.event("package.started", "Stapling and verifying distribution ZIP")
     final_directory.mkdir()
     final_app = final_directory / state["app_name"]
     runner.run(["/usr/bin/ditto", staged_app(run, state), final_app], timeout=900)
@@ -560,8 +573,8 @@ def package(run, state, runner, keep_working_artifacts=False):
     state["final_archive"] = str(archive)
     state["final_sha256"] = sha256(archive)
     save_json(run / "state.json", state)
-    print("Distribution ZIP:", archive)
-    print("SHA-256:", state["final_sha256"])
+    output.event("package.ready", "Distribution ZIP: " + str(archive) + "\nSHA-256: " + state["final_sha256"], archive=str(archive), sha256=state["final_sha256"])
+    output.result(stage="packaged", ready=True, archive=str(archive), sha256=state["final_sha256"])
     if not keep_working_artifacts:
         cleanup(run, state)
 
@@ -573,14 +586,15 @@ def execute(args, config=None):
         if config is None:
             raise DistributionError("Resolved project configuration is required.")
         if args.command == "preflight":
-            print(json.dumps(preflight(args.app.expanduser(), config, Runner(), args.check_credentials), indent=2))
+            report = preflight(args.app.expanduser(), config, Runner(), args.check_credentials)
+            output.event("preflight.completed", json.dumps(report, indent=2), report=report)
             return 0
         # A release validates authentication before making any new run.
         if args.command == "distribute":
             preflight(args.app.expanduser(), config, Runner(), check_credentials=True)
         run = prepare(args.app, args.run, config, args.entitlements)
         if args.command == "prepare":
-            print("Signed, not submitted:", run)
+            output.event("run.prepared", "Signed, not submitted: " + str(run))
             return 0
     else:
         run = args.run.expanduser().resolve(strict=True)
@@ -594,7 +608,8 @@ def execute(args, config=None):
             if args.command == "submit":
                 raise DistributionError("Packaged run cannot be resubmitted.")
             completed_archive(run, state)
-            print("Already packaged:", state["final_archive"])
+            output.event("package.ready", "Already packaged: " + state["final_archive"], archive=state["final_archive"], sha256=state["final_sha256"])
+            output.result(stage="packaged", ready=True, archive=state["final_archive"], sha256=state["final_sha256"])
             return 0
         if args.command in ("submit", "distribute"):
             submit(run, state, runner, progress=getattr(args, "progress", False))

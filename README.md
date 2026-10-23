@@ -123,6 +123,93 @@ macdist distribute --project /path/to/game/macdist.toml \
 
 Only ship `final/Game-macos.zip` from a **packaged** run. Never ship `submission.zip`: it predates stapling. The final ZIP checksum, resolved nonsecret signing configuration, tool version, entitlement snapshot, submission ID, and Apple evidence are retained with the run. Logs and run state contain local paths and release metadata; they are not intended for public source control.
 
+## Agent-managed and automated output
+
+Output is a presentation layer, independent of the workflow and its safety checks:
+
+- `--output auto` (default): updating progress lines for a TTY, compact plain lines
+  for redirected/captured stdout. Raw PTY redraws are never forwarded to captured output.
+- `--output human`: explicit terminal rendering.
+- `--output plain`: compact lines without ANSI escapes or carriage returns.
+- `--output jsonl`: one schema-versioned JSON object per line on stdout. No raw
+  command output or terminal decoration is mixed into this stream.
+
+The option works before or after the subcommand. Help/version and initial argparse
+usage errors retain normal CLI behavior. JSONL is supported for noninteractive
+workflow commands, doctor/preflight, inspection, and explicit publishing.
+Interactive setup, the picker, and the long-running dashboard reject JSONL
+**before** prompting, accessing credentials, or dispatching work. Output mode
+never bypasses confirmations, enables retries, changes authentication, or chooses
+an upload target.
+
+For an explicitly authorized release:
+
+```sh
+macdist distribute --project /path/to/game/macdist.toml \
+  --app /path/to/Game.app --name release-003 --progress --output jsonl
+```
+
+`--progress` is still explicit. It enables Apple's existing PTY-based progress
+collection, not another upload attempt. Full command evidence and raw Apple
+transcripts remain in the run's logs; publishing logs retain their existing
+credential redaction. Console progress is coalesced: duplicate/regressing
+percentages are dropped, updates are at least one second apart and normally at
+least five points or ten seconds apart, and a reported 100% is emitted immediately.
+Only percentages actually reported by the tool are displayed. Apple processing
+is a named waiting stage, **not** a simulated percentage or inferred completion.
+
+Example events (timestamps, sequence numbers, and paths abbreviated):
+
+```json
+{"schema":1,"event":"upload.started","run":"/releases/release-003"}
+{"schema":1,"event":"upload.progress","percent":25}
+{"schema":1,"event":"submission.recorded","submission_id":"…"}
+{"schema":1,"event":"notarization.waiting","submission_id":"…"}
+{"schema":1,"event":"package.ready","archive":"…","sha256":"…"}
+{"schema":1,"event":"workflow.result","status":"succeeded","exit_code":0,"ready":true}
+```
+
+Every event has `schema`, `event`, a per-invocation monotonic `sequence`, UTC
+`timestamp`, and `run` (null before a run is known). Other fields are event-specific.
+Human-readable `message` text is not a parsing contract. Handled errors produce
+`workflow.error` and a final `workflow.result`; argument validation may also
+write conventional diagnostics to stderr. Do not parse raw child-process logs
+to make workflow decisions.
+
+The final result distinguishes requested-operation success, Apple `pending`
+(exit 2), failure, interruption, and an `uncertain` recorded upload attempt.
+It includes known stage/submission/artifact/receipt/evidence paths.
+A successful `submit` or `prepare` is **not** a ready release. `ready: true`
+is emitted only when this invocation observes the packaging verification path;
+other commands do not establish readiness. Publishing reports
+`delivery_verified: false` even after a successful Butler exit.
+A killed process may leave no final event: inspect persisted evidence and never
+infer permission to retry from a missing event.
+
+### Bounded local monitoring
+
+```sh
+macdist inspect --run /path/to/run --output jsonl
+# Unlike inspect, status explicitly contacts Apple:
+macdist status --run /path/to/run --output jsonl
+```
+
+`inspect` reads only local allowlisted metadata and at most the last 64 KiB of
+upload progress. It never contacts Apple/Keychain/Butler, acquires an operation
+lock, changes state, hashes a multi-gigabyte archive, signs, submits, or retries.
+It returns the recorded stage and submission ID, historical last upload percentage,
+lock presence, expected artifact presence, publishing summary, and evidence paths.
+Unknown metadata fields and raw log contents are not returned. Oversized metadata
+and symlinked artifacts are rejected.
+
+Snapshots are best-effort across atomically updated files, not a transaction
+with a running operation. A lock may be stale and an old percentage is not proof
+the upload is still active. Artifact `checksum_verified: false` is explicit:
+presence and recorded packaging state alone do not reverify the ZIP. Use the
+existing verification/recovery workflow rather than editing state or automatically
+resubmitting. Agents can poll this small snapshot instead of tailing terminal
+transcripts; `resume --wait` remains an explicit operation on the existing ID.
+
 ## Recovery
 
 A prepared run can be uploaded and resumed separately:
