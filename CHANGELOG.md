@@ -2,11 +2,25 @@
 
 ## Unreleased
 
-- Add presentation-only auto/human/plain/JSONL output with versioned events,
-  throttled Apple/publishing progress, named waiting stages, and final results.
-- Retain raw Apple and redacted publishing evidence without flooding agent output.
-- Add bounded, read-only local inspect snapshots; never infer readiness or retry
-  permission from progress or a missing event. No Pi-specific dependencies.
+- Add `--output auto|human|plain|jsonl` before or after workflow subcommands.
+  Auto retains terminal progress rendering while captured output uses compact,
+  control-character-free lines; JSONL provides schema-versioned events with
+  timestamps, sequence numbers, run paths, and structured final results.
+- Throttle Apple and publishing progress, preserve submission IDs before emitting
+  their events, and identify Apple processing as a waiting stage without inventing
+  percentages. Distinguish operation success, pending, failure, interruption, and
+  uncertain upload attempts; none of these presentation changes enable retries.
+- Keep raw Apple transcripts, redacted publishing logs, and command evidence on
+  disk instead of forwarding verbose terminal output to agents.
+- Add `inspect --run PATH --output jsonl` for bounded, read-only local snapshots
+  of recorded state, historical progress, lock presence, artifact presence, and
+  evidence paths. Inspection never contacts services, takes a lock, or claims an
+  archive checksum was reverified.
+- Reject JSONL for interactive setup, the build picker, and the dashboard before
+  dispatch. Preserve upload authorization, credential isolation, confirmation,
+  evidence verification, and retry guards; no Pi-specific dependencies.
+- Add output, inspection, and safety regressions: 154 Python tests plus frontend
+  checks pass locally, from an installed wheel, and in macOS/Linux CI.
 
 ## 0.2.0
 
